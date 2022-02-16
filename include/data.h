@@ -1,0 +1,51 @@
+//
+// Created by kwaku on 16/02/2022.
+//
+
+#ifndef KV_STORE_DATA_H
+#define KV_STORE_DATA_H
+
+#include <cstring>
+#include <string>
+
+namespace Kora {
+    class Data {
+    public:
+        Data() = default;
+        explicit Data(const char* data) : _data{data}, _size(strlen(data)) {}
+        Data(const char* data, size_t size) : _data{data}, _size(size) {}
+        Data(const std::string& str, size_t size) : _data{str.data()}, _size(size) {}
+        explicit Data(const std::string& str) : _data{str.data()}, _size(str.size()) {}
+
+        // copy constructor
+        Data(const Data&) = default;
+        // copy assignment
+        Data& operator=(const Data&) = default;
+
+        // move constructor
+        Data(Data&& that) noexcept: _data{nullptr}, _size{0} {
+            std::swap(_data, that._data);
+            std::swap(_size, that._size);
+        }
+
+        //getters
+        // return a pointer to the first character of the data
+        [[nodiscard]] const char* data() const { return _data; }
+
+        // return the length of the referenced data in bytes
+        [[nodiscard]] size_t size() const { return _size; }
+    private:
+        const char* _data;
+        size_t _size;
+    };
+
+    inline bool operator<(const Data& d1, const Data& d2) {
+        if (d1.size() != d2.size()) return true;
+        int r = memcmp(d1.data(), d2.data(), d1.size());
+        if (r == 0)
+            return false;
+        else return true;
+    }
+}
+
+#endif //KV_STORE_DATA_H

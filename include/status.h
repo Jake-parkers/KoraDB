@@ -7,6 +7,7 @@
 
 
 #include <string>
+#include <utility>
 
 namespace Kora {
     enum class Code {
@@ -18,16 +19,17 @@ namespace Kora {
 
     class Status {
     public:
-        Status(): _code(Code::_OK), _message{""} {};
-        Status(Code code, std::string message): _code{code}, _message{message} {}
-        Status(Code code): _code{code} {}
+        Status(): _code(Code::_OK) {};
+        Status(Code code, std::string message): _code{code}, _message{std::move(message)} {}
+        explicit Status(Code code): _code{code} {}
         ~Status();
 
-        static Status OK() { return Status(); }
-        static Status NotFound(std::string message) { return Status(Code::_NOTFOUND, message); }
+        static Status OK() { return {}; }
+        static Status NotFound(std::string message) { return {Code::_NOTFOUND, std::move(message)}; }
         static Status Done() { return Status(Code::_DONE); }
-        static Status IoError(std::string message) { return Status(Code::_IOERROR, message); }
+        static Status IoError(std::string message) { return {Code::_IOERROR, std::move(message)}; }
         Code code() const { return _code; }
+        std::string message() const { return _message; }
         std::string toString() const;
 
         bool isOk() { return _code == Code::_OK; }

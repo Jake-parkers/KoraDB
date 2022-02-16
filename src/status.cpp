@@ -4,7 +4,7 @@
 
 #include "status.h"
 std::string Kora::Status::toString() const {
-    if (_message == "") return "OK";
+    if (_message.empty()) return "OK";
     else {
         switch (code()) {
             case Kora::Code::_IOERROR:
@@ -22,3 +22,5 @@ std::string Kora::Status::toString() const {
         }
     }
 }
+
+Kora::Status::~Status() = default;

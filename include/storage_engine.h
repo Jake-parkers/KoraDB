@@ -7,15 +7,18 @@
 
 #include <map>
 #include "status.h"
+#include "result.h"
+#include "data.h"
 
 namespace Kora {
     class StorageEngine {
     public:
-        Kora::Status Set(const char* key, const char* value);
-        Kora::Status Get(const char* key);
+        Kora::Status Set(Data&& key, Data&& value) noexcept;
+        Kora::Result Get(const Data& key);
         Kora::Status Delete(const char* key);
+        static void LogData(const char* data, size_t key_size, size_t value_size);
     private:
-        std::map<const char*, const char*> _memtable;
+        std::map<Data, Data, std::less<>> _memtable;
         size_t _memtableSize;
     };
 
