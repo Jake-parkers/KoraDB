@@ -10,8 +10,7 @@
 
 Kora::Status Kora::StorageEngine::Set(Data&& key, Data&& value) noexcept {
     /**
-     * Convert key and value to char array
-     * insert them into the memtable
+     * insert key and value into the memtable
      * update the memtable approx size
      * add the new data to the log file
      */
@@ -25,6 +24,11 @@ Kora::Status Kora::StorageEngine::Set(Data&& key, Data&& value) noexcept {
     data[strlen(data)] = '\n';
     _memtable.insert(std::make_pair(std::move(key), std::move(value)));
     _memtableSize += sizeof(key) + sizeof(value);
+    if (_memtableSize >= 1000) {
+        std::lock_guard<std::mutex> lg(_mutex);
+        _memtable_is_full = true;
+        _cond.notify_one();
+    }
     LogData(data, key_size, value_size);
     return {};
 }
@@ -55,4 +59,24 @@ void Kora::StorageEngine::LogData(const char* data, size_t key_size, size_t valu
         logfile.write(data, sizeof(data));
         logfile.close();
     }
+}
+
+Kora::Status Kora::StorageEngine::Write() {
+    std::unique_lock<std::mutex> ulock(_mutex);
+    _cond.wait(ulock, [this]{ return _memtable_is_full; });
+    auto path = Kora::getDBPath();
+    path /= today() + ".sst";
+    std::ofstream logfile(path.string(), std::ios::binary | std::ios_base::app);
+    if (logfile.is_open()) {
+        for(const auto& [key, value]: _memtable) {
+            size_t total_size = key.size() + value.size();
+            logfile.write(reinterpret_cast<char*>(key.size()), sizeof(key.size()));
+            logfile.write(reinterpret_cast<char*>(value.size()), sizeof(value.size()));
+            logfile.write(reinterpret_cast<char*>(&total_size), sizeof(total_size));
+            logfile.write(key.data(), sizeof(key.data()));
+            logfile.write(value.data(), sizeof(value.data()));
+        }
+        logfile.close();
+    }
+    return {};
 }

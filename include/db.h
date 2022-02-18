@@ -24,9 +24,13 @@ namespace Kora {
             createDBDirectory();
         }
 
-        explicit DB(std::string db_filename): _filename{std::move(db_filename)} { createDBDirectory(); }
+        explicit DB(std::string db_filename): _filename{std::move(db_filename)} {
+            createDBDirectory();
+        }
 
-        DB(Options options, std::string db_filename): _filename{std::move(db_filename)}, _dbOptions{options} { createDBDirectory(); }
+        DB(Options options, std::string db_filename): _filename{std::move(db_filename)}, _dbOptions{options} {
+            createDBDirectory();
+        }
 
         Result Get(const std::string& key);
 
@@ -40,6 +44,7 @@ namespace Kora {
         std::string _filename;
         Options _dbOptions{};
         StorageEngine _storage_engine;
+        std::thread t;
     };
 }
 
