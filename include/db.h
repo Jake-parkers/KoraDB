@@ -34,7 +34,7 @@ namespace Kora {
 
         Result Get(const std::string& key);
 
-        Status Set(const std::string& key, const std::string& value);
+        Status Set(std::string key, std::string value);
 
         Status Delete(std::string key);
 

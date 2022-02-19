@@ -7,23 +7,30 @@
 
 #include <cstring>
 #include <string>
+#include <iostream>
 
 namespace Kora {
     class Data {
     public:
         Data() = default;
-        explicit Data(const char* data) : _data{data}, _size(strlen(data)) {}
-        Data(const char* data, size_t size) : _data{data}, _size(size) {}
-        Data(const std::string& str, size_t size) : _data{str.data()}, _size(size) {}
-        explicit Data(const std::string& str) : _data{str.data()}, _size(str.size()) {}
+        explicit Data(char* data) : _data{data}, _size(strlen(data)) {}
+        Data(char* data, size_t size) : _data{data}, _size(size) {}
+        Data(std::string& str, size_t size) : _data{str.data()}, _size(size) {}
+        explicit Data(std::string str) : _data{str.data()}, _size(str.size()) {}
 
         // copy constructor
-        Data(const Data&) = default;
+        Data(const Data& other): _data {nullptr}, _size {0} {
+            std::cout << "Copy constructor called\n";
+            _data = (char *) malloc(other._size + 1);
+            strcpy(_data, other._data);
+            _size = other._size;
+        }
         // copy assignment
         Data& operator=(const Data&) = default;
 
         // move constructor
         Data(Data&& that) noexcept: _data{nullptr}, _size{0} {
+            std::cout << "Move constructor called\n";
             std::swap(_data, that._data);
             std::swap(_size, that._size);
         }
@@ -35,7 +42,7 @@ namespace Kora {
         // return the length of the referenced data in bytes
         [[nodiscard]] size_t size() const { return _size; }
     private:
-        const char* _data;
+        char* _data = nullptr;
         size_t _size;
     };
 

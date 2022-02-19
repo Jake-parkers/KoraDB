@@ -25,6 +25,8 @@ namespace Kora {
         Kora::Status Delete(const char* key);
         static void LogData(const char* data, size_t key_size, size_t value_size);
 
+        size_t memtableSize() { return _memtableSize; }
+
         ~StorageEngine(){
             _t.join();
         }

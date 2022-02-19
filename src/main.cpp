@@ -21,12 +21,15 @@ int main() {
 //    std::ofstream file("test.bin", std::ios::binary);
 //    file.write(reinterpret_cast<char*>(&t), name.size());
 //    file.close();
+    std::cout << "Hello from: " << std::this_thread::get_id() << '\n';
     Kora::DB db;
-    Kora::Status status = db.Set("name-female", "Joba");
-    db.Set("name-male", "Joshua");
+    std::string kamsy = "Kamsy";
+    std::string james = "James";
+    Kora::Status status = db.Set(kamsy, std::string("04:03:01"));
+    db.Set(james, "08:09:10");
     if (status.isOk()) std::cout << "Success!\n";
     else std::cout << status.message() << '\n';
-    Kora::Result result = db.Get("name");
+    Kora::Result result = db.Get("name-male");
     if (result.status().code() == Kora::Code::_OK) {
         std::cout << result.data() << '\n';
     } else {

@@ -14,7 +14,7 @@ Kora::Status Kora::StorageEngine::Set(Data&& key, Data&& value) noexcept {
      * update the memtable approx size
      * add the new data to the log file
      */
-     std::cout << "Got here\n";
+     std::cout << "Key Address = " << &key << " Value Address = " << &value << "\n";
     size_t key_size = key.size();
     size_t value_size = value.size();
     char data[key_size + value_size + 1]; //extra bytes for new line character and the new line characters of key and value
@@ -22,14 +22,14 @@ Kora::Status Kora::StorageEngine::Set(Data&& key, Data&& value) noexcept {
     strcpy(data, key.data());
     strcpy(&data[key_size], value.data());
     data[strlen(data)] = '\n';
-    _memtable.insert(std::make_pair(std::move(key), std::move(value)));
+    _memtable[key] = value;
     _memtableSize += sizeof(key) + sizeof(value);
-    if (_memtableSize >= 1000) {
+    LogData(data, key_size, value_size);
+    if (_memtableSize >= 64) {
         std::lock_guard<std::mutex> lg(_mutex);
         _memtable_is_full = true;
         _cond.notify_one();
     }
-    LogData(data, key_size, value_size);
     return {};
 }
 
@@ -62,16 +62,22 @@ void Kora::StorageEngine::LogData(const char* data, size_t key_size, size_t valu
 }
 
 Kora::Status Kora::StorageEngine::Write() {
+    std::cout << "Hello from " << std::this_thread::get_id() << "\n";
     std::unique_lock<std::mutex> ulock(_mutex);
     _cond.wait(ulock, [this]{ return _memtable_is_full; });
+    std::cout << "memtable size = " << memtableSize() << '\n';
+    _memtable_is_full = false;
     auto path = Kora::getDBPath();
     path /= today() + ".sst";
     std::ofstream logfile(path.string(), std::ios::binary | std::ios_base::app);
     if (logfile.is_open()) {
         for(const auto& [key, value]: _memtable) {
+            std::cout << "Key: " << key.data() << " Value: " << value.data() << '\n';
+            size_t key_size = key.size();
+            size_t value_size = value.size();
             size_t total_size = key.size() + value.size();
-            logfile.write(reinterpret_cast<char*>(key.size()), sizeof(key.size()));
-            logfile.write(reinterpret_cast<char*>(value.size()), sizeof(value.size()));
+            logfile.write(reinterpret_cast<char*>(&key_size), sizeof(key.size()));
+            logfile.write(reinterpret_cast<char*>(&value_size), sizeof(value.size()));
             logfile.write(reinterpret_cast<char*>(&total_size), sizeof(total_size));
             logfile.write(key.data(), sizeof(key.data()));
             logfile.write(value.data(), sizeof(value.data()));
