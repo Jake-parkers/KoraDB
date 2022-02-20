@@ -17,8 +17,11 @@ namespace Kora {
     class StorageEngine {
     public:
         StorageEngine() {
-            if(!_t.joinable())
-                _t = std::thread(&StorageEngine::Write, this);
+            if(!_writerThread.joinable())
+                _writerThread = std::thread(&StorageEngine::Write, this);
+
+            if(!_compactionThread.joinable())
+                _compactionThread = std::thread(&StorageEngine::Compact, this);
         }
         Kora::Status Set(Data&& key, Data&& value) noexcept;
         Kora::Result Get(const Data& key);
@@ -28,16 +31,23 @@ namespace Kora {
         size_t memtableSize() { return _memtableSize; }
 
         ~StorageEngine(){
-            _t.join();
+            _writerThread.join();
+            _compactionThread.join();
         }
 
         // write out memtable to sstable
         Kora::Status Write();
+
+        // compact memtable
+        Kora::Status Compact();
     private:
         std::map<Data, Data, std::less<>> _memtable;
+        std::map<Data, Data, std::less<>> _temp_memtable;
         size_t _memtableSize = 0;
-        std::thread _t;
+        std::thread _writerThread;
+        std::thread _compactionThread;
         std::condition_variable _cond;
+        std::condition_variable _compaction_cond;
         std::mutex _mutex;
         bool _memtable_is_full = false;
     };
