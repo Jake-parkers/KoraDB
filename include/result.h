@@ -17,7 +17,9 @@ namespace Kora {
         explicit Result(const Status&& status) : _status{status} {}
         Result(const Status&& status, std::string&& data): _status{status}, _data {data} {}
 
-        // setters
+//        Result(Status status, std::string data): _status{status}, _data{data} {}
+
+// setters
         void setData(const char* data) { _data = data; }
         void setStatus(const Status&& status) { _status = status; }
 

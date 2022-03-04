@@ -19,10 +19,9 @@ namespace Kora {
 
     class Status {
     public:
-        Status(): _code(Code::_OK) {};
+        Status(): _code(Code::_OK) {}
         Status(Code code, std::string message): _code{code}, _message{std::move(message)} {}
         explicit Status(Code code): _code{code} {}
-        ~Status();
 
         static Status OK() { return {}; }
         static Status NotFound(std::string message) { return {Code::_NOTFOUND, std::move(message)}; }
@@ -38,8 +37,8 @@ namespace Kora {
         bool isDone() { return _code == Code::_DONE; }
 
     private:
-        Code _code;
-        std::string _message;
+        Code _code = Code::_OK;
+        std::string _message = "";
     };
 
 }

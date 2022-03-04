@@ -10,174 +10,866 @@
 #include <filesystem>
 #include <vector>
 #include <sstream>
+#include <cstdlib>
+
 namespace fs = std::filesystem;
 
-Kora::Status Kora::StorageEngine::Set(Data&& key, Data&& value) noexcept {
+// initialize static variables
+std::map<long, std::string, std::greater<>> Kora::StorageEngine::_sstables = std::map<long, std::string, std::greater<>>();
+std::unordered_map<std::string, std::map<std::string, size_t>> Kora::StorageEngine::_hash_indexes = std::unordered_map<std::string, std::map<std::string, size_t>>();
+std::string Kora::StorageEngine::_TOMBSTONE_RECORD = "koraDYtombstoneDX";
+bool Kora::StorageEngine::_done_updating_sstables = false;
+
+Kora::Status Kora::StorageEngine::Set(Data&& key, Data&& value, bool from_log) noexcept {
     /**
      * insert key and value into the memtable
      * update the memtable approx size
      * add the new data to the log file
      */
-     std::cout << "Key Address = " << &key << " Value Address = " << &value << "\n";
-    size_t key_size = key.size();
-    size_t value_size = value.size();
-    char data[key_size + value_size + 1]; //extra bytes for new line character and the new line characters of key and value
-    // strcpy copies the string pointed to by source including the null character
-    strcpy(data, key.data());
-    strcpy(&data[key_size], value.data());
-    data[strlen(data)] = '\n';
-    std::unique_lock<std::mutex> ulock(_mutex);
-    _memtable.insert(std::make_pair(key, value));
-    _memtableSize += sizeof(key) + sizeof(value);
-    ulock.unlock();
-    LogData(data, key_size, value_size);
-    ulock.lock();
-    if (_memtableSize >= 1024) {
-        _temp_memtable = std::move(_memtable);
-        _memtable = std::map<Data, Data, std::less<>>();
-        _memtable_is_full = true;
-        _cond.notify_one();
-        _compaction_cond.notify_one();
+    while (true) {
+        std::cout << "Setting " << key.data() << '\n';
+        size_t key_size = key.size();
+        size_t value_size = value.size();
+        char data[key_size + value_size]; //extra bytes for new line character and the new line characters of key and value
+        // strcpy copies the string pointed to by source including the null character
+        strcpy(data, key.data());
+        strcpy(&data[key_size], value.data());
+        std::unique_lock<std::mutex> ulock(_mutex);
+        _memtable.insert(std::make_pair(key, value));
+        _memtableSize += sizeof(key) + sizeof(value);
+        std::cout << "Memtable size = " << _memtableSize << '\n';
+        ulock.unlock();
+        // only write to the log file when the Set method is called by a client and not when we're updating the sstables from the log fileΩ
+        if(!from_log) LogData(data, key_size, value_size);
+        ulock.lock();
+        if (_memtableSize >= 64) {
+            std::cout << "Writing out memtable\n";
+            _done_writing = false;
+            _temp_memtable = std::move(_memtable);
+            _memtableSize = 0;
+            _memtable = std::map<Data, Data, Kora::Comparator>();
+            _memtable_is_full = true;
+            _update_is_from_logfile = from_log;
+            ulock.unlock();
+            _cond.notify_one();
+            ulock.lock();
+            _cond.wait(ulock, [this] { return _done_writing; });
+            // delete log file since memtable has been successfully written to disk
+            ClearLogFile();
+            std::cout << "Woken up\n";
+        }
+        return {};
     }
-    return {};
 }
 
-Kora::Result Kora::StorageEngine::Get(const Kora::Data& key) {
+Kora::Result Kora::StorageEngine::Get(Kora::Data&& input_key) {
     /**
      * Convert key to char array
      * check the memtable first
-     * if not there then recursively check the sstables
+     * start from the most recent segment, check for they key, continue until we run out of segments to check
      */
     std::lock_guard<std::mutex> lg(_mutex);
-    if (_memtable.find(key) != _memtable.end())  {
-        return Result {Kora::Status::OK(), std::string(_memtable[key].data(), _memtable[key].size()) };
+    Result r(Kora::Status::NotFound("key not found"));
+//    for(auto& [key, value]: _memtable) {
+//        std::cout << "From GET: " << key.data() << " " << value.data() << " " << Kora::StorageEngine::_TOMBSTONE_RECORD << '\n';
+//    }
+    auto entry = _memtable.find(input_key);
+//    std::cout << "TEARS: " << entry->first.data() << " " << entry->second.data() << '\n';
+    if (entry != _memtable.end())  {
+        // record exists but has been deleted. Return not found status
+        std::cout << "TXXX value = " << std::string(entry->second.data(), entry->second.size()) << "TOMB: " << Kora::StorageEngine::_TOMBSTONE_RECORD << '\n';
+        if (std::string(entry->second.data(), entry->second.size()).compare(Kora::StorageEngine::_TOMBSTONE_RECORD) == 0) return r;
+
+        return Result(Kora::Status(), std::string(_memtable[input_key].data(), _memtable[input_key].size()));
     } else {
-        return Result (Kora::Status(Kora::Code::_NOTFOUND, "Key does not exist"));
+        for (auto& [key, value]: _sstables) {
+            std::cout << "Got here: Searching file " << value << ".sst\n";
+            r = Search(input_key.data(), value, 0);
+            if (r.status().isOk()) {
+                // check if it has been deleted
+                if (r.data().compare(Kora::StorageEngine::_TOMBSTONE_RECORD) == 0) {
+                    return Result {Kora::Status::NotFound("Key not found")};
+                }
+                return r; // we have found the key
+            }
+            // -----------------------------------------------------------------------------------------------
+            // get hash index if available
+//            auto hash_index = _hash_indexes.find(value);
+//            if (hash_index != _hash_indexes.end()) {
+//                // we have a hash index for this
+//            } else {
+//                // we no get hash index
+//            }
+        }
+        return r;
     }
+}
+
+Kora::Result Kora::StorageEngine::Search(const char* key, std::string filepath, size_t start_offset, size_t end_offset) {
+    std::ifstream segment {filepath, std::ios::binary};
+    size_t key_size = 0, value_size = 0, total_size = 0, prev_total_size = 0, copy_range = 0, file_length = 0;
+    std::string k, value;
+    if (segment.good()) {
+        segment.seekg(start_offset);
+        while (!segment.eof()) {
+            segment.seekg(total_size);
+            segment.read(reinterpret_cast<char*>(&key_size), sizeof key_size);
+            total_size += sizeof key_size;
+
+            segment.read(reinterpret_cast<char*>(&value_size), sizeof value_size);
+            total_size += sizeof value_size;
+
+            k.resize(key_size);
+            segment.read(&k[0],key_size);
+            total_size += key_size;
+            total_size += value_size;
+
+            // don't bother comparing keys that are not of the same length
+            if (k.size() != strlen(key)) {
+                segment.get(); // let's know if we are at eof quick enough to avoid errors
+                continue;
+            }
+
+            // continue as long as we have not found the key
+            if (memcmp(k.data(), key, k.size()) != 0) {
+                segment.get(); // let's know if we are at eof quick enough to avoid errors
+                continue;
+            }
+
+            value.resize(value_size);
+            segment.read(&value[0],value_size);
+
+            return Result( Kora::Status::OK(), std::move(value));
+        }
+        Result r(Kora::Status::NotFound("Key not found"));
+        return r;
+    } else {
+        // TODO: How should I handle when file no good
+    }
+}
+
+Kora::Status Kora::StorageEngine::Delete(const Data&& key) {
+    /**
+     * Add a tombstone to the memtable and the logfile. During compaction, this will be used to delete the key-value entry
+     */
+    size_t key_size = key.size(), value_size = Kora::StorageEngine::_TOMBSTONE_RECORD.size();
+    char data[key_size + value_size];
+    {
+        std::lock_guard<std::mutex> lg(_mutex);
+//        _memtable[key] = Data(_TOMBSTONE_RECORD);
+//        std::cout << "Value = " << _memtable[key].data() << '\n';
+        _memtable.insert(std::make_pair(key, Data(Kora::StorageEngine::_TOMBSTONE_RECORD.data())));
+        strcpy(data, key.data());
+        strcpy(&data[key_size], Kora::StorageEngine::_TOMBSTONE_RECORD.data());
+    }
+    for(auto& [key, value]: _memtable) {
+        std::cout << "From Delete: " << key.data() << " " << value.data() << '\n';
+    }
+    LogData(data, key_size, value_size);
+    return {};
 }
 
 // TODO: Consider making the log file path a static variable, create it once an instance of db is created
 void Kora::StorageEngine::LogData(const char* data, size_t key_size, size_t value_size) {
     auto path = Kora::getDBPath();
-    size_t total_size = key_size + value_size;
     path /= "log.kdb";
     std::ofstream logfile(path.string(), std::ios::binary | std::ios_base::app);
     if (logfile.is_open()) {
         logfile.write(reinterpret_cast<char*>(&key_size), sizeof(key_size));
         logfile.write(reinterpret_cast<char*>(&value_size), sizeof(value_size));
-        logfile.write(reinterpret_cast<char*>(&total_size), sizeof(total_size));
-        logfile.write(data, sizeof(data));
+        logfile.write(data, strlen(data));
         logfile.close();
     }
 }
 
-Kora::Status Kora::StorageEngine::Write() {
-    std::cout << "Hello from " << std::this_thread::get_id() << "\n";
-    std::unique_lock<std::mutex> ulock(_mutex);
-    _cond.wait(ulock, [this]{ return _memtable_is_full; });
-    std::cout << "memtable size = " << memtableSize() << '\n';
-    _memtable_is_full = false;
-    auto path = Kora::getDBPath();
-    path /= today() + ".sst";
-    std::ofstream logfile(path.string(), std::ios::binary | std::ios_base::app);
-    if (logfile.is_open()) {
-        for(const auto& [key, value]: _temp_memtable) {
-            std::cout << "Key: " << key.data() << " Value: " << value.data() << '\n';
-            size_t key_size = key.size();
-            size_t value_size = value.size();
-            size_t total_size = key.size() + value.size();
-            logfile.write(reinterpret_cast<char*>(&key_size), sizeof(key.size()));
-            logfile.write(reinterpret_cast<char*>(&value_size), sizeof(value.size()));
-            logfile.write(reinterpret_cast<char*>(&total_size), sizeof(total_size));
-            logfile.write(key.data(), sizeof(key.data()));
-            logfile.write(value.data(), sizeof(value.data()));
+[[noreturn]] void Kora::StorageEngine::Write() {
+    while (true) {
+        std::unique_lock<std::mutex> ulock(_mutex);
+        _cond.wait(ulock, [this]{ return _memtable_is_full; });
+        std::cout << "Hello from Writer thread, ID = " << std::this_thread::get_id() << ": Processing starts\n";
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        auto path = Kora::getDBPath();
+        path /= now() + ".sst";
+        std::cout << "Now is equal to " << path.string() << '\n';
+        size_t total_size = 0;
+        std::map<std::string, size_t> hash_index;
+        // insert first entry into has index. We're starting from there
+        hash_index.insert(std::make_pair(std::string(_temp_memtable.begin()->first.data()), 0));
+
+        size_t starting_byte = 0;
+        int count = 0;
+        size_t key_size = _temp_memtable.begin()->first.size();
+        size_t value_size = _temp_memtable.begin()->second.size();
+        std::ofstream segment(path.string(), std::ios::binary);
+
+        // if first record has not been deleted and is not from the log file, write first entry to sstable since we will be moving the iterator by 1
+        size_t min_len = _temp_memtable.begin()->second.size() < Kora::StorageEngine::_TOMBSTONE_RECORD.size() ? _temp_memtable.begin()->second.size() : Kora::StorageEngine::_TOMBSTONE_RECORD.size();
+        if (memcmp(_temp_memtable.begin()->second.data(), Kora::StorageEngine::_TOMBSTONE_RECORD.data(),min_len) == 0) {
+            if (_update_is_from_logfile) { // even if entry is deleted as seen from log file, still write it so that the value in the SStable can be updated accordingly.
+                segment.write(reinterpret_cast<char*>(&key_size), sizeof(_temp_memtable.begin()->first.size()));
+                segment.write(reinterpret_cast<char*>(&value_size), sizeof(_temp_memtable.begin()->second.size()));
+                segment.write(_temp_memtable.begin()->first.data(), key_size);
+                segment.write(_temp_memtable.begin()->second.data(), value_size);
+                // set starting byte to beginning of second entry since we will insert the first entry beforehand. The reason for inserting the first entry before hand is because we are making it an index, hence to made it easier to index the other necessary keys, we are excluding it from the iteration.
+                starting_byte =  sizeof(size_t) + sizeof(size_t) + _temp_memtable.begin()->first.size() + _temp_memtable.begin()->second.size();
+            }
+        } else {
+            //write normally if it's not deleted
+            segment.write(reinterpret_cast<char*>(&key_size), sizeof(_temp_memtable.begin()->first.size()));
+            segment.write(reinterpret_cast<char*>(&value_size), sizeof(_temp_memtable.begin()->second.size()));
+            segment.write(_temp_memtable.begin()->first.data(), key_size);
+            segment.write(_temp_memtable.begin()->second.data(), value_size);
+            // set starting byte to beginning of second entry since we will insert the first entry beforehand. The reason for inserting the first entry before hand is because we are making it an index, hence to made it easier to index the other necessary keys, we are excluding it from the iteration.
+            starting_byte =  sizeof(size_t) + sizeof(size_t) + _temp_memtable.begin()->first.size() + _temp_memtable.begin()->second.size();
         }
-        logfile.close();
+
+        if (segment.is_open()) {
+            for(auto it = std::next(_temp_memtable.begin(), 1); it != _temp_memtable.end(); it++) {
+                auto key = it->first;
+                auto value = it->second;
+
+                // skip if record has been deleted and is not from the log file
+                min_len = value.size() < Kora::StorageEngine::_TOMBSTONE_RECORD.size() ? value.size() : Kora::StorageEngine::_TOMBSTONE_RECORD.size();
+                if (!_update_is_from_logfile && memcmp(value.data(), Kora::StorageEngine::_TOMBSTONE_RECORD.data(), min_len) == 0) continue;
+
+                total_size = sizeof key.data() + sizeof value.data() + key.size() + value.size();
+                count += total_size;
+                if (count >= 50) {
+                    hash_index.insert(std::make_pair(std::string(key.data()), (count - total_size) + starting_byte));
+                    starting_byte += count;
+                    count = 0;
+                }
+                std::cout << "Key: " << key.data() << " Value: " << value.data() << '\n';
+                key_size = key.size();
+                value_size = value.size();
+                segment.write(reinterpret_cast<char*>(&key_size), sizeof(key.size()));
+                segment.write(reinterpret_cast<char*>(&value_size), sizeof(value.size()));
+                segment.write(key.data(), key_size);
+                segment.write(value.data(), value_size);
+            }
+//            for(const auto& [key, value]: _temp_memtable) {
+//                // create index as we're writing a segment out to disk. The index should store a key for every x kb
+//                total_size = sizeof key.data() + sizeof value.data() + key.size() + value.size();
+//                count += total_size;
+//                if (total_size >= 50) {
+//                    // we want to avoid making the first entry an index again since we have added it already
+//                    if (_temp_memtable.begin()->first.size() == key.size() && (memcmp(_temp_memtable.begin()->first.data(), key.data(), key.size()) == 0)){
+//                        prev_total = total_size;
+//                        total_size = 0;
+//                    }
+//                    else {
+//                        hash_index.insert(std::make_pair(path, (count - total_size) + starting_byte));
+//                        starting_byte += count;
+//                        count = 0;
+//                    }
+//                }
+//                std::cout << "Key: " << key.data() << " Value: " << value.data() << '\n';
+//                size_t key_size = key.size();
+//                size_t value_size = value.size();
+//                segment.write(reinterpret_cast<char*>(&key_size), sizeof(key.size()));
+//                segment.write(reinterpret_cast<char*>(&value_size), sizeof(value.size()));
+//                segment.write(key.data(), key_size);
+//                segment.write(value.data(), value_size);
+//                is_first_entry = false;
+//                starting_byte = total_size >= prev_total ? total_size : prev_total;
+//            }
+            segment.close();
+            Kora::StorageEngine::StoreSegmentpath(getSegmentFileAsLong(path.filename()), path);
+        }
+        _temp_memtable.erase(_temp_memtable.begin(), _temp_memtable.end());
+        for (auto& [key, value] : hash_index) {
+            std::cout << "Hash Index Key = " << key << " value = " << value << '\n';
+        }
+        _hash_indexes.insert(std::make_pair(path, hash_index));
+        _done_writing = true;
+        _memtable_is_full = false;
+        _update_is_from_logfile = false;
+        std::cout << "Processing ends\n";
+        ulock.unlock();
+        _cond.notify_one();
     }
-    _temp_memtable.erase(_temp_memtable.begin(), _temp_memtable.end());
-    return {};
 }
 
-Kora::Status Kora::StorageEngine::Compact() {
-    std::cout << "Hello from the compaction thread!! ID = " << std::this_thread::get_id() << '\n';
-    std::unique_lock<std::mutex> ulock(_mutex);
-    _compaction_cond.wait(ulock, [this]{ return _memtable_is_full; });
-    ulock.unlock();
-    // loop through db folder
-    // check if no of ssts is at least 2
-    // pick two ssts of the same size and merge them into one
-    // repeatedly do this until we have just one sst or we reach a filesize that we have decided not to merge
-    auto db_path = getDBPath();
-    uintmax_t size = 0;
-    int file_count = 0;
-    std::vector<CompactibleObject> compactible_files;
-    struct CompactibleObject c_file;
-    std::ifstream f;
-    for (auto const& dir_entry: fs::directory_iterator{db_path}) {
-        if(dir_entry.exists() && dir_entry.is_regular_file()) {
-            if(dir_entry.path().has_extension()) {
-                auto ext = dir_entry.path().extension().string();
-                if (ext == ".sst") {
-                    if (file_count == 2) {
-                        auto new_segment_path = Kora::getDBPath();
-                        new_segment_path /= today() + ".sst";
-                        std::ifstream file1(compactible_files[0].filepath.string());
-                        std::ifstream file2(compactible_files[1].filepath.string());
-                        std::ofstream new_segment (new_segment_path, std::ios::binary | std::ios::app);
-                        std::string file1_bin_string;
-                        std::string file2_bin_string;
-                        size_t key_size, value_size, total_size;
-                        size_t key_size2, value_size2, total_size2;
-                        char *key = nullptr; char * value = nullptr;
-                        char *key2 = nullptr; char * value2 = nullptr;
-                        while(!file1.eof() && !file2.eof()) {
-                            getline(file1, file1_bin_string);
-                            getline(file2, file2_bin_string);
-                            std::stringstream linestream1(file1_bin_string);
-                            std::stringstream linestream2(file2_bin_string);
-                            linestream1 >> key_size >> value_size >> total_size >> key >> value;
-                            linestream2 >> key_size2 >> value_size2 >> total_size2 >> key2 >> value2;
-                            if (strcmp(key, key2) > 0) {
-                                // key is greater than key2
-                                new_segment.write(reinterpret_cast<char*>(&key_size), sizeof(key_size));
-                                new_segment.write(reinterpret_cast<char*>(&value_size), sizeof(value_size));
-                                new_segment.write(reinterpret_cast<char*>(&total_size), sizeof(total_size));
-                                new_segment.write(key, sizeof(key));
-                                new_segment.write(value, sizeof(value));
-                            }
-                            if (strcmp(key, key2) < 0) {
-                                // key is less than key2
-                                new_segment.write(reinterpret_cast<char*>(&key_size2), sizeof(key_size2));
-                                new_segment.write(reinterpret_cast<char*>(&value_size2), sizeof(value_size2));
-                                new_segment.write(reinterpret_cast<char*>(&total_size2), sizeof(total_size2));
-                                new_segment.write(key2, sizeof(key2));
-                                new_segment.write(value2, sizeof(value2));
-                            }
-                            if (strcmp(key, key2) == 0) {
-                                // they are equal
-                                // pick the most recent
-                            }
-                        }
-                    } else {
-                        if (size == 0) {
-                            c_file = {dir_entry.path().string(), dir_entry.file_size()};
-                            compactible_files.push_back(c_file);
-                            size = dir_entry.file_size();
-                            file_count += 1;
-                        } else {
-                            uintmax_t size_plus_512 = size + 512;
-                            uintmax_t size_minus_512 = dir_entry.file_size() - 512;
-                            if (dir_entry.file_size() >= size_minus_512 && dir_entry.file_size() <= size_plus_512) {
-                                c_file = {dir_entry.path().string(), dir_entry.file_size()};
-                                compactible_files.push_back(c_file);
-                                size += dir_entry.file_size();
-                                file_count += 1;
-                            }
-                        }
+void Kora::StorageEngine::Compact() {
+//    std::cout << "Inside started = " << Kora::StorageEngine::_done_updating_sstables << '\n';
+//    if (Kora::sstableCount() <= 1 || !Kora::StorageEngine::_done_updating_sstables) return;
+    if (Kora::sstableCount() <= 1) return;
+    auto db_path = Kora::getDBPath();
+
+    std::cout << "COMPACTION HAS STARTED\n";
+    while (Kora::sstableCount() >= 2) {
+
+        long int f1_time_created = 0; // time_t is alias for long int
+        long int f2_time_created = 0;
+        size_t key_size = 0, value_size = 0, total_size = 0, prev_total_size = 0, copy_range = 0, file_length = 0;
+        size_t key_size2 = 0, value_size2 = 0, total_size2 = 0, prev_total_size2 = 0, copy_range2 = 0, file_length2= 0;
+
+
+        auto compactible_files = L1CompactibleFiles();
+        if (compactible_files.size() < 2) {
+            compactible_files = L2CompactibleFiles();
+            if (compactible_files.size() < 2) compactible_files = L3CompactibleFiles();
+            if (compactible_files.size() < 2) compactible_files = L4CompactibleFiles();
+            if (compactible_files.size() < 2) break;
+        }
+//        if (compactible_files.empty() || compactible_files.size() < 2) break;
+
+        for(auto const& f: compactible_files) { std::cout << f.filepath << "\n"; }
+
+        // initialize variables
+        std::string key, value, key2, value2;
+
+        // create new segment file
+        auto new_segment_path = Kora::getDBPath();
+        new_segment_path /= now() + ".sst";
+        std::ofstream new_segment{ new_segment_path, std::ios::binary};
+
+        // open the compactible files for reading
+        std::ifstream file1 {compactible_files[0].filepath.string(), std::ios::binary};
+        file_length = compactible_files[0].size;
+        std::ifstream file2 {compactible_files[1].filepath.string(), std::ios::binary};
+        file_length2 = compactible_files[1].size;
+
+        std::string f1_filename = compactible_files[0].filepath.filename();
+        f1_filename = f1_filename.substr(0, f1_filename.find_last_of('.'));
+        std::string f2_filename = compactible_files[1].filepath.filename();
+        f2_filename = f2_filename.substr(0, f2_filename.find_last_of('.'));
+        f1_time_created = std::stol(f1_filename, nullptr, 10); // nullptr because the entire string will consist of digits
+        f2_time_created = std::stol(f2_filename, nullptr, 10);
+
+        while(!file1.eof() && !file2.eof()) {
+            // prev_total_size will hold the next position to start reading the next record from
+            size_t f1_pos = file1.tellg();
+            size_t f2_pos = file2.tellg();
+
+            prev_total_size = total_size;
+            prev_total_size2 = total_size2;
+            file1.seekg(prev_total_size); file2.seekg(prev_total_size2);
+            file1.read(reinterpret_cast<char*>(&key_size), sizeof key_size);
+            total_size += sizeof key_size;
+            //file1.seekg( total_size);
+
+            file2.read(reinterpret_cast<char*>(&key_size2), sizeof key_size2);
+            total_size2 += sizeof key_size2;
+            //file2.seekg(total_size2);
+
+            file1.read(reinterpret_cast<char*>(&value_size), sizeof value_size);
+            total_size += sizeof value_size;
+            //file1.seekg(total_size);
+
+            file2.read(reinterpret_cast<char*>(&value_size2), sizeof value_size2);
+            total_size2 += sizeof value_size2;
+            //file2.seekg(total_size2);
+
+            key.resize(key_size);
+            file1.read(&key[0],key_size);
+            total_size += key_size;
+            //file1.seekg(total_size);
+
+            key2.resize(key_size2);
+            file2.read(&key2[0],key_size2);
+            total_size2 += key_size2;
+            //file2.seekg(total_size2);
+
+            value.resize(value_size);
+            file1.read(&value[0],value_size);
+            total_size += value_size;
+            //file1.seekg(total_size);
+
+            value2.resize(value_size2);
+            file2.read(&value2[0],value_size2);
+            total_size2 += value_size2;
+            //file2.seekg(total_size2);
+
+            int pos1 = file1.tellg();
+            int pos2 = file2.tellg();
+
+            auto diff = key.compare(key2);
+            file1.seekg(prev_total_size); // go to beginning of current record
+            file2.seekg(prev_total_size2);
+            copy_range2 = total_size2 - prev_total_size2;
+            copy_range = total_size - prev_total_size;
+            if (diff > 0) {
+                // key is greater than key2
+                if (value2.compare(Kora::StorageEngine::_TOMBSTONE_RECORD) == 0) {
+//                    file2.seekg(pos2);
+//                    total_size = prev_total_size;
+//                    file1.seekg(total_size);
+//                    file1.get();
+//                    file2.get();
+//                    DiscardDeletedKey(key, compactible_files[1].filepath.string());
+                    file1.close();
+                    file2.close();
+                    DiscardDeletedKey(key2, f2_time_created);
+                    file1.seekg(0);
+                    file2.seekg(0);
+                    total_size = 0, total_size2 = 0, prev_total_size2 = 0, prev_total_size = 0;
+                    file1 = std::ifstream {compactible_files[0].filepath.string(), std::ios::binary};
+                    file2 = std::ifstream  {compactible_files[1].filepath.string(), std::ios::binary};
+                    continue;
+                }
+                std::copy_n(std::istreambuf_iterator<char>(file2), copy_range2, std::ostreambuf_iterator<char>(new_segment));
+                size_t n_pos = new_segment.tellp();
+                file2.seekg(pos2);
+                total_size = prev_total_size;
+                file1.seekg(total_size);
+            }
+            else if (diff < 0) {
+                // key is less than key2
+                if (value.compare(Kora::StorageEngine::_TOMBSTONE_RECORD) == 0) {
+//                    file1.seekg(pos1);
+//                    total_size2 = prev_total_size2;
+//                    file2.seekg(total_size2);
+//                    file1.get();
+//                    file2.get();
+//                    DiscardDeletedKey(key, compactible_files[0].filepath.string());
+                    file1.close();
+                    file2.close();
+                    DiscardDeletedKey(key, f1_time_created);
+                    file1.seekg(0);
+                    file2.seekg(0);
+                    total_size = 0, total_size2 = 0, prev_total_size2 = 0, prev_total_size = 0;
+                    file1 = std::ifstream {compactible_files[0].filepath.string(), std::ios::binary};
+                    file2 = std::ifstream  {compactible_files[1].filepath.string(), std::ios::binary};
+                    continue;
+                }
+                std::copy_n(std::istreambuf_iterator<char>(file1), copy_range, std::ostreambuf_iterator<char>(new_segment));
+                file1.seekg(pos1);
+                total_size2 = prev_total_size2;
+                file2.seekg(total_size2);
+            }
+            else {
+                // they are equal
+                // pick the most recent
+                std::string f1_filename = compactible_files[0].filepath.filename();
+                f1_filename = f1_filename.substr(0, f1_filename.find_last_of('.'));
+                std::string f2_filename = compactible_files[1].filepath.filename();
+                f2_filename = f2_filename.substr(0, f2_filename.find_last_of('.'));
+                f1_time_created = std::stol(f1_filename, nullptr, 10); // nullptr because the entire string will consist of digits
+                f2_time_created = std::stol(f2_filename, nullptr, 10);
+                if (f1_time_created > f2_time_created) {
+                    if (value.compare(Kora::StorageEngine::_TOMBSTONE_RECORD) == 0) {
+//                        file1.seekg(total_size);
+//                        file2.seekg(total_size2);
+//                        file1.get();
+//                        file2.get();
+//                        DiscardDeletedKey(key, compactible_files[0].filepath.string());
+                        file1.close();
+                        file2.close();
+                        DiscardDeletedKey(key, f1_time_created);
+                        file1.seekg(0);
+                        file2.seekg(0);
+                        total_size = 0, total_size2 = 0, prev_total_size2 = 0, prev_total_size = 0;
+                        file1 = std::ifstream {compactible_files[0].filepath.string(), std::ios::binary};
+                        file2 = std::ifstream  {compactible_files[1].filepath.string(), std::ios::binary};
+                        continue;
                     }
+                    std::copy_n(std::istreambuf_iterator<char>(file1), copy_range, std::ostreambuf_iterator<char>(new_segment));
+                    file1.seekg(pos1);
+//                    total_size2 = prev_total_size2;
+                    file2.seekg(total_size2);
+                }
+                else {
+                    if (value2.compare(Kora::StorageEngine::_TOMBSTONE_RECORD) == 0) {
+//                        file2.seekg(total_size2);
+//                        file1.seekg(total_size);
+//                        file1.get();
+//                        file2.get();
+//                        DiscardDeletedKey(key, compactible_files[1].filepath.string());
+                        file1.close();
+                        file2.close();
+                        DiscardDeletedKey(key2, f2_time_created);
+                        file1.seekg(0);
+                        file2.seekg(0);
+                        total_size = 0, total_size2 = 0, prev_total_size2 = 0, prev_total_size = 0;
+                        file1 = std::ifstream {compactible_files[0].filepath.string(), std::ios::binary};
+                        file2 = std::ifstream  {compactible_files[1].filepath.string(), std::ios::binary};
+                        continue;
+                    }
+                    std::copy_n(std::istreambuf_iterator<char>(file2), copy_range2, std::ostreambuf_iterator<char>(new_segment));
+                    file2.seekg(pos2);
+//                    total_size = prev_total_size;
+                    file1.seekg(total_size);
                 }
             }
+            // go to position total_size + 1
+            file1.get(); // do this so that eof can be set appropriately. see https://en.cppreference.com/w/cpp/io/basic_istream/get
+            file2.get();
+        }
+        // copy over any of the leftovers. This may copy over some deleted entries. it's no problem as deleted records are checked on Get() and such records would eventually be removed by compaction in the future.
+        if (!file1.eof()) {
+            file1.seekg(total_size); // because .get() has moved it one byte already
+            std::copy_n(std::istreambuf_iterator<char>(file1), file_length - total_size, std::ostreambuf_iterator<char>(new_segment));
+        }
+        if (!file2.eof()) {
+            file2.seekg(total_size2);  // because .get() has moved it one byte already
+            std::copy_n(std::istreambuf_iterator<char>(file2), file_length2 - total_size2, std::ostreambuf_iterator<char>(new_segment));
+        }
+        new_segment.seekp(0);
+        new_segment.close();
+        // store new segment for easy retrieval
+        Kora::StorageEngine::StoreSegmentpath(getSegmentFileAsLong(new_segment_path.filename()), new_segment_path);
+
+        // delete all references to already compacted files
+        Kora::StorageEngine::DeleteSegmentpath(getSegmentFileAsLong(compactible_files[0].filepath.filename()));
+        fs::remove(compactible_files[0].filepath);
+        RemoveIndex(compactible_files[0].filepath);
+        Kora::StorageEngine::DeleteSegmentpath(getSegmentFileAsLong(compactible_files[1].filepath.filename()));
+        RemoveIndex(compactible_files[1].filepath);
+        fs::remove(compactible_files[1].filepath);
+
+        // create index
+        CreateIndexFromCompactedSegment(new_segment_path.string());
+    }
+}
+
+void Kora::StorageEngine::CreateIndexFromCompactedSegment(std::string filepath) {
+    std::cout << "Indexing for compacted segment has started\n";
+    std::ifstream file1 {filepath, std::ios::binary};
+
+    size_t key_size = 0, value_size = 0, count = 0, starting_byte = 0, prev_total_size = 0, first = 0;
+
+    std::string key, value, key2, value2;
+
+    std::map<std::string, size_t> hash_index;
+
+    while(!file1.eof()) {
+        // prev_total_size will hold the next position to start reading the next record from
+        file1.seekg(prev_total_size);
+        size_t total_size = 0;
+        size_t f1_pos = file1.tellg();
+
+        file1.read(reinterpret_cast<char*>(&key_size), sizeof key_size);
+        total_size += sizeof key_size;
+
+        file1.read(reinterpret_cast<char*>(&value_size), sizeof value_size);
+        total_size += sizeof value_size;
+
+        key.resize(key_size);
+        file1.read(&key[0],key_size);
+        total_size += key_size;
+
+        value.resize(value_size);
+        file1.read(&value[0],value_size);
+        total_size += value_size;
+        count += total_size;
+
+        // index first entry
+        if (first == 0) {
+            hash_index.insert(std::make_pair(key,
+                                             starting_byte));
+            starting_byte += count;
+            prev_total_size = count;
+            count = 0;
+            ++first;
+            file1.get(); // do this so that eof can be set appropriately. see https://en.cppreference.com/w/cpp/io/basic_istream/get
+            continue;
+        }
+
+        // index next x byte/kb
+        if (count >= 50) {
+            std::cout << "Postion = " << (count - total_size) + starting_byte << "\n";
+            hash_index.insert(std::make_pair(key, starting_byte));
+            prev_total_size += total_size;
+            starting_byte += total_size;
+            count = 0;
+            file1.get(); // do this so that eof can be set appropriately. see https://en.cppreference.com/w/cpp/io/basic_istream/get
+            continue;
+        }
+        // go to position total_size + 1
+        file1.get(); // do this so that eof can be set appropriately. see https://en.cppreference.com/w/cpp/io/basic_istream/get
+        starting_byte += count;
+        prev_total_size += count;
+    }
+    _hash_indexes.insert(std::make_pair(filepath, hash_index));
+    for (auto& [key, value] : hash_index) {
+        std::cout << "Compaction Hash Index Key = " << key << " value = " << value << '\n';
+    }
+    for (auto& [key, value] : _hash_indexes) {
+        std::cout << "Hash Indexes Key = " << key << '\n';
+    }
+    std::cout << "Indexing for compacted segment has ended\n";
+}
+
+std::vector<Kora::CompactibleObject> Kora::StorageEngine::L1CompactibleFiles() {
+    auto db_path = Kora::getDBPath();
+    std::vector<Kora::CompactibleObject> result;
+    short int file_count = 0;
+    uintmax_t total_size = 0;
+    for (auto const& dir_entry: fs::directory_iterator{db_path}) {
+        if (dir_entry.exists() && dir_entry.is_regular_file()) {
+            auto ext = dir_entry.path().extension().string();
+            if (ext == ".sst") {
+                if (dir_entry.file_size() >= 50 && dir_entry.file_size() <= 100) {
+                    std::cout << "L1 Path = " << dir_entry.path() << '\n';
+                    if (file_count == 0) {
+                        CompactibleObject cobj = {dir_entry.path().string(), dir_entry.file_size()};
+                        total_size = cobj.size;
+                        result.push_back(cobj);
+                        ++file_count;
+                    } else {
+//                    if (dir_entry.file_size() < 50 || abs((long long)dir_entry.file_size() - (long long)total_size) > 50) continue;
+                        CompactibleObject cobj = {dir_entry.path().string(), dir_entry.file_size()};
+                        if (std::find(result.begin(), result.end(), cobj) != result.end()) continue;
+                        result.push_back(cobj);
+                        ++file_count;
+                        break;
+                    }
+                }
+            } else continue;
         }
     }
-    return {};
+    return result;
+}
+
+std::vector<Kora::CompactibleObject> Kora::StorageEngine::L2CompactibleFiles() {
+    auto db_path = Kora::getDBPath();
+    std::vector<Kora::CompactibleObject> result;
+    short int file_count = 0;
+    for (auto const& dir_entry: fs::directory_iterator{db_path}) {
+        if (dir_entry.exists() && dir_entry.is_regular_file()) {
+            auto ext = dir_entry.path().extension().string();
+            if (ext == ".sst") {
+                if (dir_entry.file_size() >= 101 && dir_entry.file_size() <= 300) {
+                    std::cout << "L2 Path = " << dir_entry.path() << '\n';
+                    if (file_count == 0) {
+                        CompactibleObject cobj = {dir_entry.path().string(), dir_entry.file_size()};
+                        result.push_back(cobj);
+                        ++file_count;
+                    } else {
+//                    if (dir_entry.file_size() < 50 || abs((long long)dir_entry.file_size() - (long long)total_size) > 50) continue;
+                        CompactibleObject cobj = {dir_entry.path().string(), dir_entry.file_size()};
+                        if (std::find(result.begin(), result.end(), cobj) != result.end()) continue;
+                        result.push_back(cobj);
+                        ++file_count;
+                        break;
+                    }
+                }
+            } else continue;
+        }
+    }
+    return result;
+}
+
+std::vector<Kora::CompactibleObject> Kora::StorageEngine::L3CompactibleFiles() {
+    auto db_path = Kora::getDBPath();
+    std::vector<Kora::CompactibleObject> result;
+    short int file_count = 0;
+    for (auto const& dir_entry: fs::directory_iterator{db_path}) {
+        if (dir_entry.exists() && dir_entry.is_regular_file()) {
+            auto ext = dir_entry.path().extension().string();
+            if (ext == ".sst") {
+                if (dir_entry.file_size() >= 301 && dir_entry.file_size() <= 500) {
+                    std::cout << "L3 Path = " << dir_entry.path() << '\n';
+                    if (file_count == 0) {
+                        CompactibleObject cobj = {dir_entry.path().string(), dir_entry.file_size()};
+                        result.push_back(cobj);
+                        ++file_count;
+                    } else {
+//                    if (dir_entry.file_size() < 50 || abs((long long)dir_entry.file_size() - (long long)total_size) > 50) continue;
+                        CompactibleObject cobj = {dir_entry.path().string(), dir_entry.file_size()};
+                        if (std::find(result.begin(), result.end(), cobj) != result.end()) continue;
+                        result.push_back(cobj);
+                        ++file_count;
+                        break;
+                    }
+                }
+            } else continue;
+        }
+    }
+    return result;
+}
+
+std::vector<Kora::CompactibleObject> Kora::StorageEngine::L4CompactibleFiles() {
+    auto db_path = Kora::getDBPath();
+    std::vector<Kora::CompactibleObject> result;
+    short int file_count = 0;
+    for (auto const& dir_entry: fs::directory_iterator{db_path}) {
+        if (dir_entry.exists() && dir_entry.is_regular_file()) {
+            auto ext = dir_entry.path().extension().string();
+            if (ext == ".sst") {
+                if (dir_entry.file_size() >= 501 && dir_entry.file_size() <= 1000) {
+                    std::cout << "L4 Path = " << dir_entry.path() << '\n';
+                    if (file_count == 0) {
+                        CompactibleObject cobj = {dir_entry.path().string(), dir_entry.file_size()};
+                        result.push_back(cobj);
+                        ++file_count;
+                    } else {
+//                    if (dir_entry.file_size() < 50 || abs((long long)dir_entry.file_size() - (long long)total_size) > 50) continue;
+                        CompactibleObject cobj = {dir_entry.path().string(), dir_entry.file_size()};
+                        if (std::find(result.begin(), result.end(), cobj) != result.end()) continue;
+                        result.push_back(cobj);
+                        ++file_count;
+                        break;
+                    }
+                }
+            } else continue;
+        }
+    }
+    return result;
+}
+
+void Kora::StorageEngine::BuildSSTableMap() {
+    auto db_path = Kora::getDBPath();
+    if (!fs::exists(db_path)) return;
+    for (auto const& dir_entry: fs::directory_iterator{db_path}) {
+        if (dir_entry.exists() && dir_entry.is_regular_file()) {
+            auto ext = dir_entry.path().extension().string();
+            if (ext == ".sst") {
+                long filename = Kora::getSegmentFileAsLong(dir_entry.path().filename());
+                _sstables.insert(std::make_pair(filename, dir_entry.path().string()));
+            } else continue;
+        }
+    }
+}
+
+
+void Kora::StorageEngine::BuildIndexes() {
+    auto db_path = Kora::getDBPath();
+    if (!fs::exists(db_path)) return;
+    for (auto const& dir_entry: fs::directory_iterator{db_path}) {
+        if (dir_entry.exists() && dir_entry.is_regular_file()) {
+            auto ext = dir_entry.path().extension().string();
+            if (ext == ".sst") {
+                CreateIndexFromCompactedSegment(dir_entry.path().string());
+            } else continue;
+        }
+    }
+}
+
+/**
+ * This method reads the log file, writes each entry to a memtable which would eventually be written out to disk and compacted, hence updating the records.
+ */
+void Kora::StorageEngine::UpdateSSTablesFromLogFile(StorageEngine *SE) {
+    std::cout << "Updating starts\n";
+    auto path = Kora::getDBPath();
+    path /= "log.kdb";
+    if(!fs::exists(path)) return;
+    std::ifstream file {path, std::ios::binary};
+
+    size_t key_size = 0, value_size = 0, count = 0, starting_byte = 0, total_size = 0, first = 0;
+
+    std::string key, value, key2, value2;
+
+    std::map<std::string, size_t> hash_index;
+
+    if (file.good()) {
+        while(!file.eof()) {
+            // prev_total_size will hold the next position to start reading the next record from
+            file.seekg(total_size);
+            size_t f1_pos = file.tellg();
+
+            file.read(reinterpret_cast<char*>(&key_size), sizeof key_size);
+            total_size += sizeof key_size;
+
+            file.read(reinterpret_cast<char*>(&value_size), sizeof value_size);
+            total_size += sizeof value_size;
+
+            key.resize(key_size);
+            file.read(&key[0],key_size);
+            total_size += key_size;
+
+            value.resize(value_size);
+            file.read(&value[0],value_size);
+            total_size += value_size;
+            std::cout << "Updating values o: Key = " << key << " value = " << value << '\n';
+            SE->Set(Data(std::move(key)), Data(std::move(value)), true);
+            std::cout << "Updating values ended\n";
+            file.get();
+        }
+    }
+    file.close();
+    Kora::StorageEngine::_done_updating_sstables = true;
+    std::cout << "Clear Log file after updating\n";
+    for (auto& [key, value]: SE->_memtable) {
+        std::cout << "LG: " << key.data() << " " << value.data() << "\n";
+    }
+}
+
+void Kora::StorageEngine::DiscardDeletedKey(std::string input_key, long most_recent_filename) {
+    try {
+        for (const auto& [filename, filepath]: Kora::StorageEngine::_sstables) {
+            if (filename > most_recent_filename) continue;
+
+            std::cout << "DISCARDING: " << filename << '\n';
+
+            if(!fs::exists(filepath)) return;
+
+            std::ifstream file {filepath, std::ios::binary};
+
+            // create temp file
+            fs::path temp_file_path { filepath.substr(0, filepath.find_last_of(".")) + "_temp.sst"};
+            std::ofstream temp_file {temp_file_path, std::ios::binary};
+            if (file.good() && temp_file.good()) {
+                // store contents of file here temporarily
+                std::copy_n(std::istreambuf_iterator<char>(file), fs::file_size(filepath), std::ostreambuf_iterator<char>(temp_file));
+                temp_file.close();
+            }
+
+            size_t key_size = 0, value_size = 0, count = 0, starting_byte = 0, total_size = 0, prev_total_size = 0, first = 0;
+
+            std::string key, value, key2, value2;
+
+            std::map<std::string, size_t> hash_index;
+
+            while(!file.eof()) {
+                file.seekg(prev_total_size);
+                prev_total_size = total_size;
+                file.seekg(prev_total_size);
+                size_t f1_pos = file.tellg();
+
+                file.read(reinterpret_cast<char*>(&key_size), sizeof key_size);
+                total_size += sizeof key_size;
+
+                file.read(reinterpret_cast<char*>(&value_size), sizeof value_size);
+                total_size += sizeof value_size;
+
+                key.resize(key_size);
+                file.read(&key[0],key_size);
+                total_size += key_size;
+
+                value.resize(value_size);
+                file.read(&value[0],value_size);
+                total_size += value_size;
+                // if deleted, remove from file
+                if (key.compare(input_key) == 0) {
+                    // resize file from 0 to prev_total_size
+                    file.close();
+                    {
+                        std::ofstream f{filepath, std::ios::binary}; // open main file in output mode
+                        std::ifstream tempf{temp_file_path, std::ios::binary}; // open temp file in input mode
+                        std::cout << "TOTAL SIZE = " << total_size << " PREV = " << prev_total_size << '\n';
+                        fs::resize_file(filepath, prev_total_size); // resize file to the total size before the deleted entry
+                        std::copy_n(std::istreambuf_iterator<char>(tempf), prev_total_size, std::ostreambuf_iterator<char>(f));
+                        tempf.seekg(total_size); // seek to the next entry after the deleted entry
+                        if (total_size < fs::file_size(temp_file_path)) std::copy_n(std::istreambuf_iterator<char>(tempf), fs::file_size(temp_file_path) - total_size, std::ostreambuf_iterator<char>(f));
+                        // file should auto close once out of this scope
+                        tempf.close();
+                        break;
+                    }
+                    file = std::ifstream {filepath, std::ios::binary};
+                    file.seekg(prev_total_size);
+                }
+                file.get();
+            }
+            file.seekg(0);
+            file.close();
+            std::cout << " CLOSED\n";
+            fs::remove(temp_file_path);
+        }
+    } catch (...) {
+        std::cout << " Error ocurred with deleting tombstones\n";
+    }
+}
+
+void Kora::StorageEngine::ClearLogFile() {
+    static int count;
+    auto path = getDBPath();
+    path /= "log.kdb";
+    try {
+        std::cout << "Clearing Log file " << ++count << " times";
+        fs::resize_file(path, 0);
+    } catch (fs::filesystem_error const& ex) {
+        // TODO: FIgure out how to handle this better
+    }
 }

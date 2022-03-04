@@ -9,6 +9,8 @@
 #include <iostream>
 #include <chrono>
 #include <ctime>
+#include <fstream>
+#include <sstream>
 
 namespace fs = std::filesystem;
 
@@ -17,6 +19,11 @@ namespace Kora {
         fs::path filepath;
         uintmax_t size;
     };
+
+    inline bool operator==(const CompactibleObject &c1, const CompactibleObject &c2) {
+        std::cout << "Compactible Object operator== called\n";
+        return c1.filepath.string().compare(c2.filepath.string()) == 0;
+    }
 
     inline void createDBDirectory() {
         fs::path p = fs::current_path();
@@ -46,9 +53,42 @@ namespace Kora {
         return parent_path /= "db";
     }
 
-    inline std::string today() {
-        std::time_t result = std::time(nullptr);
-        return std::asctime(std::localtime(&result));
+    inline std::string now() {
+        static int count = 0;
+        auto result = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        std::cout << "Called " << ++count << " times. Filename = " << result << '\n';
+        std::stringstream ss;
+        ss << result;
+        return ss.str();
+    }
+
+    inline size_t fileLength(std::ifstream& file) {
+        file.seekg(0, file.end);
+        size_t length = file.tellg();
+        file.seekg(0, file.beg);
+        return length;
+    }
+
+    inline int sstableCount() {
+        int count = 0;
+        auto path = getDBPath();
+        if (!fs::exists(path)) return count;
+        for(auto const& dir_entry: fs::directory_iterator{path}) {
+            if (dir_entry.exists() && dir_entry.is_regular_file()) {
+                auto ext = dir_entry.path().extension().string();
+                if (ext == ".sst") ++count;
+            }
+        }
+        return count;
+    }
+
+    inline long getSegmentFileAsLong(fs::path filename) {
+        std::string filename_str = filename.string();
+        std::cout << "filename = " << filename << '\n';
+        filename_str = filename_str.substr(0, filename_str.find_last_of('.'));
+        long result =  std::stol(filename_str, nullptr, 10);
+        std::cout << "Filename as long = " <<  result << '\n';
+        return result;
     }
 }
 

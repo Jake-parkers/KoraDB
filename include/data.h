@@ -43,16 +43,39 @@ namespace Kora {
         [[nodiscard]] size_t size() const { return _size; }
     private:
         char* _data = nullptr;
-        size_t _size;
+        size_t _size = 0;
     };
 
-    inline bool operator<(const Data& d1, const Data& d2) {
-        if (d1.size() != d2.size()) return true;
-        int r = memcmp(d1.data(), d2.data(), d1.size());
-        if (r == 0)
-            return false;
-        else return true;
-    }
+    class Comparator {
+    public:
+        bool operator()(const Data& d1, const Data& d2) const {
+            std::cout << "Comparing key1 = " << d1.data() << " and key2: = " << d2.data() << '\n';
+            const size_t min_len = (d1.size() < d2.size()) ? d1.size() : d2.size();
+            int result = memcmp(d1.data(), d2.data(), min_len);
+            std::cout << "Result from() = " << result << " " << d1.size() << " " <<  d2.size() << '\n';
+            if (result < 0) {
+                // first differing byte in d1 is less than that of d2, hence  d1 precedes d2
+                return true;
+            }
+            if (result == 0) {
+                if (d1.size() < d2.size()) {
+                    // they are not the same length and d1 is the smaller one, then it precedes d2
+                    return true;
+                } else if (d1.size() > d2.size()) {
+                    return false;
+                } else {
+                    // they are same so bool doesn't really matter here
+                    std::cout << "8 million kweh!!\n";
+                    return true;
+                }
+            }
+
+            if (result > 0) {
+                // first differing byte in d1 is greater than that of d2, hence d2 precedes d1
+                return false;
+            }
+        }
+    };
 }
 
 #endif //KV_STORE_DATA_H

@@ -32,7 +32,7 @@ namespace Kora {
             createDBDirectory();
         }
 
-        Result Get(const std::string& key);
+        Result Get(std::string key);
 
         Status Set(std::string key, std::string value);
 
@@ -41,7 +41,7 @@ namespace Kora {
         void Write() {}
 
     private:
-        std::string _filename;
+        std::string _filename = "";
         Options _dbOptions{};
         StorageEngine _storage_engine;
         std::thread t;
