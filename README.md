@@ -34,13 +34,13 @@ This project was built as a library that can be embedded into other projects tha
 
 ### Linking to another project
 
-Assuming that our project's name is `untitled`, we can use the library like so:
+Assuming that our project's name is `example`, we can use the library like so:
 
 ```
-cmake_minimum_required(VERSION 3.21)
-project(untitled)
+cmake_minimum_required(VERSION 3.16.3)
+project(example)
 
-add_executable(untitled main.cpp)
+add_executable(example main.cpp)
 
 set(CMAKE_CXX_STANDARD 17)
 
@@ -50,10 +50,10 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17 -pthread")
 
 include_directories(/usr/local/lib)
 
-find_library(KORATEST libkora PATHS /usr/local/lib)
+find_library(KORADB libkoradb.dylib PATHS /usr/local/lib)
 
-target_link_libraries(untitled ${KORATEST})
-target_include_directories(untitled PUBLIC  $<BUILD_INTERFACE:/usr/local/include>)
+target_link_libraries(example ${KORADB})
+target_include_directories(example PUBLIC  $<B
 
 ```
 See the embedded example folder for a sample project and usage
@@ -130,4 +130,5 @@ This project applies several OOP techniques
 ### Concurrency
 
 - This process spins up threads in `timer.h` on line 17 and `storage_engine.h` on line 30
-
+- std::lock_guard is used in `storage_engine.cpp` on lines 68, 142
+- std::condition_variable is used in `storage_engine.h` on line 60 and in `storage_engine.cpp` on lines 51, 53, 165, 233
