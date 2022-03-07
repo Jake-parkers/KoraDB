@@ -88,4 +88,4 @@ This class contains different options that control how the database behaves.
 
 ## Implementation Details
 
-See [](impl.md) for more details on how the database was implemented
+See [https://github.com/Jake-parkers/KoraDB/blob/main/impl.md](impl.md) for more details on how the database was implemented
