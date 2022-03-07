@@ -2,8 +2,8 @@
 // Created by Joshua Kwaku on 13/02/2022.
 //
 
-#ifndef KV_STORE_DB_H
-#define KV_STORE_DB_H
+#ifndef KV_STORE_KDB_H
+#define KV_STORE_KDB_H
 
 #include "status.h"
 #include "result.h"
@@ -49,4 +49,4 @@ namespace Kora {
 }
 
 
-#endif //KV_STORE_DB_H
+#endif //KV_STORE_KDB_H

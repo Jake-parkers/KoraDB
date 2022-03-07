@@ -2,7 +2,7 @@
 // Created by Joshua Kwaku on 13/02/2022.
 //
 
-#include "status.h"
+#include "../include/status.h"
 std::string Kora::Status::toString() const {
     if (_message.empty()) return "OK";
     else {

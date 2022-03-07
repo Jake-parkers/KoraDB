@@ -20,7 +20,6 @@ namespace Kora {
 
         // copy constructor
         Data(const Data& other): _data {nullptr}, _size {0} {
-            std::cout << "Copy constructor called\n";
             _data = (char *) malloc(other._size + 1);
             strcpy(_data, other._data);
             _size = other._size;
@@ -30,7 +29,6 @@ namespace Kora {
 
         // move constructor
         Data(Data&& that) noexcept: _data{nullptr}, _size{0} {
-            std::cout << "Move constructor called\n";
             std::swap(_data, that._data);
             std::swap(_size, that._size);
         }
@@ -49,10 +47,8 @@ namespace Kora {
     class Comparator {
     public:
         bool operator()(const Data& d1, const Data& d2) const {
-            std::cout << "Comparing key1 = " << d1.data() << " and key2: = " << d2.data() << '\n';
             const size_t min_len = (d1.size() < d2.size()) ? d1.size() : d2.size();
             int result = memcmp(d1.data(), d2.data(), min_len);
-            std::cout << "Result from() = " << result << " " << d1.size() << " " <<  d2.size() << '\n';
             if (result < 0) {
                 // first differing byte in d1 is less than that of d2, hence  d1 precedes d2
                 return true;
@@ -65,8 +61,7 @@ namespace Kora {
                     return false;
                 } else {
                     // they are same so bool doesn't really matter here
-                    std::cout << "8 million kweh!!\n";
-                    return true;
+                    return false;
                 }
             }
 

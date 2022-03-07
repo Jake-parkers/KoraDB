@@ -14,7 +14,7 @@ add_library(koradb SHARED src/kdb.cpp src/options.cpp src/status.cpp src/storage
 
 set_target_properties(koradb PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION 1 PUBLIC_HEADER "include/data.h;include/helper.h;include/kdb.h;include/options.h;include/result.h;include/status.h;include/storage_engine.h;include/timer.h")
 
-configure_file(koradb.pc.in kora.pc @ONLY)
+configure_file(koradb.pc.in koradb.pc @ONLY)
 
 target_include_directories(koradb PRIVATE .)
 

@@ -4,12 +4,8 @@
 #include <iostream>
 #include <utility>
 
-#include "../include/db.h"
-#include "../include/data.h"
-
+#include "../include/kdb.h"
 Kora::Status Kora::DB::Set(std::string key, std::string value) {
-//    const char* k = &key[0];
-//    const char* v = &value[0];
     return _storage_engine.Set(Data(std::move(key)), Data(std::move(value)));
 }
 

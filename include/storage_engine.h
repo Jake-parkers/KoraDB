@@ -45,6 +45,12 @@ namespace Kora {
         }
 
     private:
+        static const int _MAX_MEMTABLE_SIZE = 2000000; // in bytes ~ 2MB
+        static const int _MAX_LEVEL1_SIZE = 5000000; // in bytes ~ 5MB
+        static const int _MAX_LEVEL2_SIZE = 8000000; // in bytes ~ 8MB
+        static const int _MAX_LEVEL3_SIZE = 12000000; // in bytes ~ 12MB
+        static const int _MIN_LEVEL4_SIZE = 12000001;
+        static const int _HASH_INDEX_INTERVAL = 10000; // in bytes 10KB
         std::map<Data, Data, Kora::Comparator> _memtable;
         std::map<Data, Data, Kora::Comparator> _temp_memtable;
         static std::map<long, std::string, std::greater<>> _sstables; // filename -> fullpath
