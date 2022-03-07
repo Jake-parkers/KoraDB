@@ -89,3 +89,45 @@ This class contains different options that control how the database behaves.
 ## Implementation Details
 
 See [impl.md](https://github.com/Jake-parkers/KoraDB/blob/main/impl.md) for more details on how the database was implemented
+
+
+## Rubric Points
+
+The following rubric points were addressed in this project
+
+### Loops, Functions, I/O
+
+Several control structures and functions are used in this project
+
+- The project reads data from a file and processes it: StorageEngine::Search on line 91 in `storage_engine.cpp`
+- The project writes data to a file: StorageEngine::LogData on line 150 in `storage_engine.cpp`
+- The project writes data to a file: StorageEngine::Write on line 162 in `storage_engine.cpp`
+- The project reads data from and writes data to a file: StorageEngine::Compact on line 237 in `storage_engine.cpp`
+- The projects reads data and processes it: StorageEngine::CreateIndexFromCompactedSegment on line 433 in `storage_engine.cpp`
+- The project defines several helper functions: `include/helper.h`
+- The project uses while loops, for loops, if statements and switch statements in `storage_engine.cpp` on lines 29, 69, 77, 95, 97, 154, 163, 182, 201, 241, 250, 278, 442, 463, 496 etc.
+- The project uses a switch statement: Status::toString on line 9 in `status.cpp`
+- The project uses if/else statements in `data.h` on lines 52, 56, 60, 62, 68
+
+### Object Oriented Programming
+
+This project applies several OOP techniques
+
+-The project is organized into several classes with appropriate specifiers in `data.h` (line 13), `kdb.h` (line 21), `result.h` (line 13) `status.h` (line 20) `storage_engine.h` (line 20) `timer.h` (line 12)
+- This project uses member initializer lists in `status.h` on lines 22, 23, 24, 
+- This project uses member initializer lists in `timer.h` on line 14
+- This project uses member initializer lists in `kdb.h` on lines 27, 31
+- This project uses member initializer lists in `data.h` on lines 16, 17, 18, 19, 22, 31
+- Classes in this project abstract implementation from their interface
+
+### Memory Management
+
+- Destructors are used in `timer.h` and `storage_engine.h` on lines 16 and 43 respectively
+- Move semantics is used in this project in `storage_engine.h` on lines 37, 38, 39
+- Move semantics is used in this project in `result.h` on lines 17, 18
+- This project passed data by reference in `result.h` on line 60
+
+### Concurrency
+
+- This process spins up threads in `timer.h` on line 17 and `storage_engine.h` on line 30
+
