@@ -85,3 +85,7 @@ This class is used as a return type just like Status. The difference between the
 ### options.h
 
 This class contains different options that control how the database behaves.
+
+## Implementation Details
+
+See [](impl.md) for more details on how the database was implemented
