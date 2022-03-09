@@ -22,10 +22,12 @@ This project uses cmake and can only be built and used on *POSIX* systems for no
 
 ### Quick Start
 
+Ensure you have at least g++-9 and gcc-9 installed. You can reference this article https://linuxhint.com/install-and-use-g-on-ubuntu/ for guidelines on how to go this.
+
 ```
 mkdir build
 cd build
-cmake -DCMAKE_BUILD_TYPE=Release ..
+cmake -D CMAKE_BUILD_TYPE=Release -D CMAKE_C_COMPILER=gcc-9 -D CMAKE_CXX_COMPILER=g++-9 ..
 sudo make install
 ```
 
@@ -50,10 +52,10 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17 -pthread")
 
 include_directories(/usr/local/lib)
 
-find_library(KORADB libkoradb.dylib PATHS /usr/local/lib)
+find_library(KORADB libkoradb.so PATHS /usr/local/lib)
 
 target_link_libraries(example ${KORADB})
-target_include_directories(example PUBLIC  $<B
+target_include_directories(example PUBLIC  $<BUILD_INTERFACE:/usr/local/include>)
 
 ```
 See the embedded example folder for a sample project and usage
