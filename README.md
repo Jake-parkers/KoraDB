@@ -11,6 +11,10 @@ Kora is a persistent key-value database that provides ordered mapping between ke
 
 - The compaction strategy used is size-tiered compaction (compaction is done in the background periodically)
 
+## Implementation Details
+
+See [impl.md](https://github.com/Jake-parkers/KoraDB/blob/main/impl.md) for more details on how the database was implemented
+
 ## Cloning the project
 
 ```
@@ -97,10 +101,6 @@ This class is used as a return type just like Status. The difference between the
 ### options.h
 
 This class contains different options that control how the database behaves.
-
-## Implementation Details
-
-See [impl.md](https://github.com/Jake-parkers/KoraDB/blob/main/impl.md) for more details on how the database was implemented
 
 
 ## Rubric Points
