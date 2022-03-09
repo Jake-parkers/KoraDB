@@ -11,7 +11,7 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17 -pthread")
 
 include_directories(/usr/local/lib)
 
-find_library(KORADB libkoradb.dylib PATHS /usr/local/lib)
+find_library(KORADB libkoradb.so PATHS /usr/local/lib)
 
 target_link_libraries(example ${KORADB})
 target_include_directories(example PUBLIC  $<BUILD_INTERFACE:/usr/local/include>)
