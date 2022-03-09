@@ -34,6 +34,17 @@ sudo make install
 ## Usage
 This project was built as a library that can be embedded into other projects that need a persistent key-value store. Hence building the project will install the library into `/usr/local/include/koradb` and `/usr/local/lib`. 
 
+### Using the example project
+From the root of the project do the following
+
+```
+cd example
+mkdir build && cd build
+cmake -D CMAKE_C_COMPILER=gcc-9 -D CMAKE_CXX_COMPILER=g++-9 ..
+make
+./example
+```
+
 ### Linking to another project
 
 Assuming that our project's name is `example`, we can use the library like so:
@@ -56,7 +67,6 @@ find_library(KORADB libkoradb.so PATHS /usr/local/lib)
 
 target_link_libraries(example ${KORADB})
 target_include_directories(example PUBLIC  $<BUILD_INTERFACE:/usr/local/include>)
-
 ```
 See the embedded example folder for a sample project and usage
 
