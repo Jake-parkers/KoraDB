@@ -43,7 +43,7 @@ Compaction occurs in a background thread and it runs at specific intervals. The 
 - 2MB <= size <= 5MB
 - 5MB <= size <= 8MB
 - 8MB <= size <= 12MB
-- >= 12MB
+- greater than 12MB
 
 Files that fall within the same range and compacted and merged together. If a key occurs in both files, the most recent write (which will reside in the most recent) sstable will be used. If the most recent write contains the tombstone record, the key-value pair would be deleted from that file and a search would begin to find all other occurences of that pair in other segment files and delete them accordingly. If otherwise no tombstone record is found, the the value of the pair in the most recent segment would be used.
 
