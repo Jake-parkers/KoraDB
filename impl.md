@@ -21,7 +21,7 @@ When data is to be read from the db, there are 2 places to look
 - the current memtable
 - all of the sstables (database segments) that have been written out to disk
 
-More recent writes that have not been written out to an sstable will reside in the memtable and so when a read request comes in, the result would be gotten from the memtable, otherwise, we have to search through all of the segment files starting from the most recent until the key is located or not (if it doesn'e exist).
+More recent writes that have not been written out to an sstable will reside in the memtable and so when a read request comes in, the result would be gotten from the memtable, otherwise, we have to search through all of the segment files starting from the most recent until the key is located or not (if it doesn't exist).
 
 ## Deleting from the db
 
