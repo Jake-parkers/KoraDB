@@ -8,7 +8,7 @@ Each database is stored as a set of files consisting of a log file and multiple 
 
 ## Writing to the db
 
-When a write come in, two things happen:
+When a write comes in, two things happen:
 
 - the data (key and value) is written to an in memory tree structure called a memtable (specifically, this project uses std::map which uses a red-black tree under the hood). This data structure maintains the keys in a sorted order.
 - the data (key and value) is also written to a log file in an append only manner. The reason for also writing to a log file is so that when in an event where the database crashes, the most recent writes in the memtable (which would be lost) can be restored from the log file.
